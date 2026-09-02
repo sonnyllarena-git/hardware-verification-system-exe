@@ -11,9 +11,7 @@ public static class HardwareDetector
 
     public static void DetectScreenResolution(HardwareSpec spec)
     {
-        var width = GetSystemMetrics(CxScreen);
-        var height = GetSystemMetrics(CyScreen);
-        spec.ScreenResolution = $"{width}x{height}";
+        spec.ScreenResolution = GetPhysicalScreenResolution();
     }
 
     public static void DetectOsAndCpu(HardwareSpec spec)
@@ -78,6 +76,35 @@ public static class HardwareDetector
         using var audioSearcher = new ManagementObjectSearcher(
             "SELECT Name FROM Win32_SoundDevice WHERE Status = \"OK\"");
         spec.HeadsetPresent = audioSearcher.Get().Count > 0;
+    }
+
+    // GetSystemMetrics reports DPI-virtualized logical pixels for a non-DPI-aware process
+    // (e.g. 1536x864 for a 1920x1080 display at 125% scaling), so the physical resolution is
+    // read from Win32_VideoController instead; GetSystemMetrics is only the fallback, since
+    // that WMI class's resolution fields are null on some drivers/VMs.
+    private static string GetPhysicalScreenResolution()
+    {
+        try
+        {
+            using var searcher = new ManagementObjectSearcher(
+                "SELECT CurrentHorizontalResolution, CurrentVerticalResolution FROM Win32_VideoController");
+            foreach (ManagementObject controller in searcher.Get())
+            {
+                var width = controller["CurrentHorizontalResolution"]?.ToString();
+                var height = controller["CurrentVerticalResolution"]?.ToString();
+                if (!string.IsNullOrEmpty(width) && width != "0" &&
+                    !string.IsNullOrEmpty(height) && height != "0")
+                {
+                    return $"{width}x{height}";
+                }
+            }
+        }
+        catch (ManagementException)
+        {
+            // Fall through to GetSystemMetrics below.
+        }
+
+        return $"{GetSystemMetrics(CxScreen)}x{GetSystemMetrics(CyScreen)}";
     }
 
     [DllImport("user32.dll")]
