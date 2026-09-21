@@ -10,6 +10,16 @@ namespace TcpHardwareCheck.Services;
 // it without notice, which would silently break this class (empty/failed requests, not a crash).
 public static class SpeedTestService
 {
+    // One stream per target URL badly underestimates fast connections: fast.com's own API caps
+    // urlCount at however many edge servers are nearby (confirmed live — asking for 8 returned
+    // only 5), and a single connection to one of those servers tops out well below the real link
+    // speed (measured ~88 Mbps on one stream against a line fast.com itself clocked at 620 Mbps
+    // elsewhere) — matches this project's own reports (and the extension's identical port of this
+    // class) landing ~4x under fast.com's reading. Fast.com's real client compensates by opening
+    // many simultaneous connections per server; this multiplies each url into StreamsPerUrl
+    // concurrent streams to do the same.
+    private const int StreamsPerUrl = 4;
+
     private static readonly HttpClient Http = new HttpClient();
     private static readonly TimeSpan TestDuration = TimeSpan.FromSeconds(5);
 
@@ -43,14 +53,14 @@ public static class SpeedTestService
         long totalBytes = 0;
         var stopwatch = Stopwatch.StartNew();
 
-        var tasks = urls.Select(async url =>
+        var tasks = urls.SelectMany(url => Enumerable.Range(0, StreamsPerUrl).Select(async _ =>
         {
             while (stopwatch.Elapsed < TestDuration)
             {
                 var sent = isUpload ? await UploadChunkAsync(url) : await DownloadChunkAsync(url);
                 Interlocked.Add(ref totalBytes, sent);
             }
-        });
+        }));
         await Task.WhenAll(tasks);
 
         return Math.Round(totalBytes * 8.0 / stopwatch.Elapsed.TotalSeconds / 1_000_000, 1);
