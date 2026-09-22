@@ -1,6 +1,8 @@
 using TcpHardwareCheck.Models;
 using TcpHardwareCheck.Services;
 
+const int MaxTests = 3;
+
 LoadDotEnv();
 
 Console.WriteLine("TCP Hardware Verification Tool");
@@ -76,55 +78,35 @@ async Task RunAsync()
             return;
         }
 
-        Console.WriteLine("Scanning your system...");
-
-        var spec = new HardwareSpec();
-
-        Console.WriteLine("  - Detecting OS and CPU...");
-        HardwareDetector.DetectOsAndCpu(spec);
-
-        Console.WriteLine("  - Detecting RAM and storage...");
-        HardwareDetector.DetectRamAndStorage(spec);
-
-        Console.WriteLine("  - Detecting screen resolution...");
-        HardwareDetector.DetectScreenResolution(spec);
-
-        Console.WriteLine("  - Detecting webcam and headset...");
-        HardwareDetector.DetectPeripherals(spec);
-
-        Console.WriteLine("  - Measuring internet speed (this can take 10-20 seconds)...");
-        try
+        // Internet speed in particular can vary a lot run to run (Wi-Fi interference, momentary
+        // congestion), so rather than submitting whatever a single run happens to measure, let
+        // the applicant run it again — up to MaxTests total — and pick which result to send.
+        var results = new List<HardwareSpec>();
+        for (var testNumber = 1; testNumber <= MaxTests; testNumber++)
         {
-            var (down, up) = await SpeedTestService.MeasureAsync();
-            spec.InternetSpeedDown = down;
-            spec.InternetSpeedUp = up;
-        }
-        catch (Exception ex)
-        {
-            // A network blip or Cloudflare rate limit here shouldn't cost the applicant the rest
-            // of an already-completed hardware scan — leave the speed fields null (same as a
-            // failed measurement in the extension's popup.js) and still submit everything else
-            // collected.
-            Console.WriteLine($"  (couldn't measure internet speed: {ex.Message} — continuing anyway)");
+            results.Add(await RunOneTestAsync(testNumber));
+
+            if (testNumber < MaxTests)
+            {
+                Console.WriteLine();
+                Console.Write(
+                    $"Run another test? {MaxTests - testNumber} retest(s) left. (y/n): ");
+                var again = (Console.ReadLine() ?? string.Empty).Trim()
+                    .StartsWith("y", StringComparison.OrdinalIgnoreCase);
+                if (!again)
+                {
+                    break;
+                }
+            }
         }
 
-        Console.WriteLine();
-        Console.WriteLine($"OS:       {spec.OsVersion}");
-        Console.WriteLine($"CPU:      {spec.CpuBrand} {spec.CpuModel} ({spec.CpuCores} cores)");
-        Console.WriteLine($"RAM:      {spec.RamGb} GB");
-        Console.WriteLine($"Storage:  {spec.StorageGb} GB ({spec.StorageType})");
-        Console.WriteLine($"Screen:   {spec.ScreenResolution}");
-        Console.WriteLine(
-            $"Internet: {spec.InternetSpeedDown?.ToString() ?? "Unavailable"} Mbps down / "
-            + $"{spec.InternetSpeedUp?.ToString() ?? "Unavailable"} Mbps up");
-        Console.WriteLine($"Webcam:   {spec.WebcamPresent}");
-        Console.WriteLine($"Headset:  {spec.HeadsetPresent}");
-        Console.WriteLine();
+        var chosenSpec = results.Count == 1 ? results[0] : ChooseResult(results);
 
+        Console.WriteLine();
         Console.WriteLine("Submitting...");
         var submitted = useSupabase
-            ? await supabaseSubmitter!.SubmitAsync(spec, apiKey)
-            : await apiClient!.SubmitAsync(spec);
+            ? await supabaseSubmitter!.SubmitAsync(chosenSpec, apiKey)
+            : await apiClient!.SubmitAsync(chosenSpec);
 
         Console.WriteLine();
         Console.WriteLine(
@@ -139,6 +121,80 @@ async Task RunAsync()
         Console.WriteLine($"Error: {ex.Message}");
         Console.WriteLine(
             "Please take a screenshot of this window and send it to HR so they can look into it.");
+    }
+}
+
+async Task<HardwareSpec> RunOneTestAsync(int testNumber)
+{
+    Console.WriteLine();
+    Console.WriteLine(testNumber == 1 ? "Scanning your system..." : $"Scanning your system (test {testNumber})...");
+
+    var spec = new HardwareSpec();
+
+    Console.WriteLine("  - Detecting OS and CPU...");
+    HardwareDetector.DetectOsAndCpu(spec);
+
+    Console.WriteLine("  - Detecting RAM and storage...");
+    HardwareDetector.DetectRamAndStorage(spec);
+
+    Console.WriteLine("  - Detecting screen resolution...");
+    HardwareDetector.DetectScreenResolution(spec);
+
+    Console.WriteLine("  - Detecting webcam and headset...");
+    HardwareDetector.DetectPeripherals(spec);
+
+    Console.WriteLine("  - Measuring internet speed (this can take 10-20 seconds)...");
+    try
+    {
+        var (down, up) = await SpeedTestService.MeasureAsync();
+        spec.InternetSpeedDown = down;
+        spec.InternetSpeedUp = up;
+    }
+    catch (Exception ex)
+    {
+        // A network blip or Cloudflare rate limit here shouldn't cost the applicant the rest of
+        // an already-completed hardware scan — leave the speed fields null (same as a failed
+        // measurement in the extension's popup.js) and still keep this as a candidate result.
+        Console.WriteLine($"  (couldn't measure internet speed: {ex.Message} — continuing anyway)");
+    }
+
+    Console.WriteLine();
+    Console.WriteLine($"OS:       {spec.OsVersion}");
+    Console.WriteLine($"CPU:      {spec.CpuBrand} {spec.CpuModel} ({spec.CpuCores} cores)");
+    Console.WriteLine($"RAM:      {spec.RamGb} GB");
+    Console.WriteLine($"Storage:  {spec.StorageGb} GB ({spec.StorageType})");
+    Console.WriteLine($"Screen:   {spec.ScreenResolution}");
+    Console.WriteLine(
+        $"Internet: {spec.InternetSpeedDown?.ToString() ?? "Unavailable"} Mbps down / "
+        + $"{spec.InternetSpeedUp?.ToString() ?? "Unavailable"} Mbps up");
+    Console.WriteLine($"Webcam:   {spec.WebcamPresent}");
+    Console.WriteLine($"Headset:  {spec.HeadsetPresent}");
+
+    return spec;
+}
+
+static HardwareSpec ChooseResult(List<HardwareSpec> results)
+{
+    Console.WriteLine();
+    Console.WriteLine("Which test result would you like to submit?");
+    for (var i = 0; i < results.Count; i++)
+    {
+        var spec = results[i];
+        Console.WriteLine(
+            $"  {i + 1}. Internet: {spec.InternetSpeedDown?.ToString() ?? "Unavailable"} Mbps down / "
+            + $"{spec.InternetSpeedUp?.ToString() ?? "Unavailable"} Mbps up");
+    }
+
+    while (true)
+    {
+        Console.Write($"Enter a number (1-{results.Count}): ");
+        var input = Console.ReadLine();
+        if (int.TryParse(input, out var choice) && choice >= 1 && choice <= results.Count)
+        {
+            return results[choice - 1];
+        }
+
+        Console.WriteLine($"'{input}' isn't a valid choice.");
     }
 }
 
