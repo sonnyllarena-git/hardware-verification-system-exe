@@ -55,12 +55,15 @@ public class SupabaseSubmitter
         });
 
         using var response = await http.SendAsync(request);
-        var body = await response.Content.ReadAsStringAsync();
 
-        Console.WriteLine(
-            response.IsSuccessStatusCode
-                ? $"Submitted successfully: {body}"
-                : $"Submission failed ({(int)response.StatusCode}): {body}");
+        // Deliberately doesn't print the response body on success — it's the literal PASS/FAIL
+        // result, and applicants shouldn't see that; only HR reviewing the dashboard should.
+        // Program.cs prints its own generic "submitted, HR will review" message either way.
+        if (!response.IsSuccessStatusCode)
+        {
+            var body = await response.Content.ReadAsStringAsync();
+            Console.WriteLine($"Submission failed ({(int)response.StatusCode}): {body}");
+        }
 
         return response.IsSuccessStatusCode;
     }
