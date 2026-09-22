@@ -31,9 +31,18 @@ if (string.IsNullOrEmpty(apiKey))
     apiKey = Console.ReadLine() ?? string.Empty;
 }
 
+// tcp-hardware-check-api isn't deployed anywhere reachable yet (direct-submit-rpc.sql's own
+// header calls this Supabase lane a "temporary quick remote testing lane" until that changes),
+// so "supabase" is the only mode that actually works out of the box — and it's the mode a real
+// single-file distributable needs to default to, since applicants won't have a .env to set it.
+// Same anon key already embedded client-side in the extension's popup.js — safe to ship this
+// way, RLS + the RPC function are what actually gate access, not secrecy of this key.
 var apiBaseUrl = Environment.GetEnvironmentVariable("API_BASE_URL") ?? "http://localhost:3001/api";
-var submitMode = Environment.GetEnvironmentVariable("SUBMIT_MODE") ?? "api";
+var submitMode = Environment.GetEnvironmentVariable("SUBMIT_MODE") ?? "supabase";
 var useSupabase = string.Equals(submitMode, "supabase", StringComparison.OrdinalIgnoreCase);
+var defaultSupabaseUrl = "https://xomtepfevlphmajhdgnu.supabase.co";
+var defaultSupabaseAnonKey =
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhvbXRlcGZldmxwaG1hamhkZ251Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODgyNjc1NjAsImV4cCI6MjEwMzg0MzU2MH0.yC6SuKg_-Dk3mkrBbfbb_qQNSSgzQLpig4hxgSZUzlo";
 
 await RunAsync();
 
@@ -53,10 +62,8 @@ async Task RunAsync()
 
         if (useSupabase)
         {
-            var supabaseUrl = Environment.GetEnvironmentVariable("SUPABASE_URL")
-                ?? throw new InvalidOperationException("SUPABASE_URL must be set when SUBMIT_MODE=supabase");
-            var supabaseAnonKey = Environment.GetEnvironmentVariable("SUPABASE_ANON_KEY")
-                ?? throw new InvalidOperationException("SUPABASE_ANON_KEY must be set when SUBMIT_MODE=supabase");
+            var supabaseUrl = Environment.GetEnvironmentVariable("SUPABASE_URL") ?? defaultSupabaseUrl;
+            var supabaseAnonKey = Environment.GetEnvironmentVariable("SUPABASE_ANON_KEY") ?? defaultSupabaseAnonKey;
             supabaseSubmitter = new SupabaseSubmitter(supabaseUrl, supabaseAnonKey);
         }
         else
