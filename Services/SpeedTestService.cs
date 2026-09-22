@@ -1,83 +1,73 @@
 using System.Diagnostics;
-using System.Text.Json;
-using System.Text.RegularExpressions;
 
 namespace TcpHardwareCheck.Services;
 
-// Uses fast.com's undocumented API (the same mechanism community tools like `fast-cli` rely on):
-// scrape a token out of fast.com's JS bundle, request CDN target URLs, then GET (download) /
-// POST (upload) against them. There is no official SLA for this — Netflix can change or remove
-// it without notice, which would silently break this class (empty/failed requests, not a crash).
+// Uses Cloudflare's speed test endpoints (the same ones behind speed.cloudflare.com and the
+// @cloudflare/speedtest npm package) instead of fast.com — documented and stable, no scraping a
+// token out of an obfuscated JS bundle. Verified live before switching: GET .../__down?bytes=N
+// returns exactly N bytes, POST .../__up accepts and discards any body.
 public static class SpeedTestService
 {
-    // One stream per target URL badly underestimates fast connections: fast.com's own API caps
-    // urlCount at however many edge servers are nearby (confirmed live — asking for 8 returned
-    // only 5), and a single connection to one of those servers tops out well below the real link
-    // speed (measured ~88 Mbps on one stream against a line fast.com itself clocked at 620 Mbps
-    // elsewhere) — matches this project's own reports (and the extension's identical port of this
-    // class) landing ~4x under fast.com's reading. Fast.com's real client compensates by opening
-    // many simultaneous connections per server; this multiplies each url into StreamsPerUrl
-    // concurrent streams to do the same.
-    private const int StreamsPerUrl = 4;
+    // One connection per test badly underestimates fast connections (same lesson learned from
+    // fast.com's single-stream-per-target design) — open several concurrent streams to approach
+    // the real link capacity instead of whatever one connection happens to sustain.
+    private const int Streams = 4;
+
+    // Upload chunk size is deliberately much smaller than the download chunk (10MB below): a
+    // large POST body can be handed to the OS's socket send buffer almost instantly regardless
+    // of the real uplink speed, so timing one big request start-to-response can badly overstate
+    // upload throughput — confirmed live: a naive single/few-chunk browser test read ~93 Mbps
+    // upload on a connection where a reference client tracking real bytes-in-flight (M-Lab's
+    // ndt7, which watches WebSocket bufferedAmount rather than trusting request/response timing)
+    // read ~24 Mbps on the same line. Many small round trips are far less likely to be entirely
+    // absorbed by buffering, since each one has to actually complete for the loop to continue —
+    // the same reasoning ndt7's own upload algorithm uses to grow message size gradually rather
+    // than send one large blob.
+    private const int UploadChunkBytes = 262_144;
+
+    private const string DownloadUrl = "https://speed.cloudflare.com/__down?bytes=10000000";
+    private const string UploadUrl = "https://speed.cloudflare.com/__up";
 
     private static readonly HttpClient Http = new HttpClient();
     private static readonly TimeSpan TestDuration = TimeSpan.FromSeconds(5);
 
     public static async Task<(double DownMbps, double UpMbps)> MeasureAsync()
     {
-        var urls = await GetTargetUrlsAsync();
-        var down = await MeasureAsync(urls, isUpload: false);
-        var up = await MeasureAsync(urls, isUpload: true);
+        var down = await MeasureAsync(isUpload: false);
+        var up = await MeasureAsync(isUpload: true);
         return (down, up);
     }
 
-    private static async Task<List<string>> GetTargetUrlsAsync()
-    {
-        var html = await Http.GetStringAsync("https://fast.com/");
-        var scriptPath = Regex.Match(html, "/app-[^\"]+\\.js").Value;
-        var script = await Http.GetStringAsync($"https://fast.com{scriptPath}");
-        var token = Regex.Match(script, "token:\"(?<token>[^\"]+)\"").Groups["token"].Value;
-
-        var json = await Http.GetStringAsync(
-            $"https://api.fast.com/netflix/speedtest/v2?https=true&token={token}&urlCount=3");
-        using var doc = JsonDocument.Parse(json);
-        return doc.RootElement.GetProperty("targets")
-            .EnumerateArray()
-            .Select(target => target.GetProperty("url").GetString()
-                ?? throw new InvalidOperationException("fast.com target missing a url"))
-            .ToList();
-    }
-
-    private static async Task<double> MeasureAsync(List<string> urls, bool isUpload)
+    private static async Task<double> MeasureAsync(bool isUpload)
     {
         long totalBytes = 0;
         var stopwatch = Stopwatch.StartNew();
 
-        var tasks = urls.SelectMany(url => Enumerable.Range(0, StreamsPerUrl).Select(async _ =>
+        var tasks = Enumerable.Range(0, Streams).Select(async _ =>
         {
             while (stopwatch.Elapsed < TestDuration)
             {
-                var sent = isUpload ? await UploadChunkAsync(url) : await DownloadChunkAsync(url);
+                var sent = isUpload ? await UploadChunkAsync() : await DownloadChunkAsync();
                 Interlocked.Add(ref totalBytes, sent);
             }
-        }));
+        });
         await Task.WhenAll(tasks);
 
         return Math.Round(totalBytes * 8.0 / stopwatch.Elapsed.TotalSeconds / 1_000_000, 1);
     }
 
-    private static async Task<long> DownloadChunkAsync(string url)
+    private static async Task<long> DownloadChunkAsync()
     {
-        var bytes = await Http.GetByteArrayAsync(url);
+        var bytes = await Http.GetByteArrayAsync(DownloadUrl);
         return bytes.LongLength;
     }
 
-    private static async Task<long> UploadChunkAsync(string url)
+    private static async Task<long> UploadChunkAsync()
     {
-        var payload = new byte[1_000_000];
+        var payload = new byte[UploadChunkBytes];
         Random.Shared.NextBytes(payload);
         using var content = new ByteArrayContent(payload);
-        await Http.PostAsync(url, content);
+        await Http.PostAsync(UploadUrl, content);
         return payload.LongLength;
     }
 }
