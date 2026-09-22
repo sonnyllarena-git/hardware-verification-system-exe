@@ -6,6 +6,18 @@ LoadDotEnv();
 Console.WriteLine("TCP Hardware Verification Tool");
 Console.WriteLine();
 
+Console.Write("Are your headset and internet connection both hard-wired (not Wi-Fi/Bluetooth)? (y/n): ");
+var isWired = (Console.ReadLine() ?? string.Empty).Trim().StartsWith("y", StringComparison.OrdinalIgnoreCase);
+if (!isWired)
+{
+    Console.WriteLine();
+    Console.WriteLine("Warning: a wired headset and wired internet connection give the most reliable");
+    Console.WriteLine("result. You can still continue, but your hardware check may fail if either one");
+    Console.WriteLine("is running over Wi-Fi or Bluetooth instead.");
+}
+
+Console.WriteLine();
+
 // The API key is the only thing that identifies who a submission belongs to — both submission
 // paths (this RPC and tcp-hardware-check-api's routes/submit.js) look the applicant up purely by
 // api_key and never read a name or email from the request. A name/email prompt here would just
@@ -110,19 +122,23 @@ async Task RunAsync()
         Console.WriteLine();
 
         Console.WriteLine("Submitting...");
-        if (useSupabase)
-        {
-            await supabaseSubmitter!.SubmitAsync(spec, apiKey);
-        }
-        else
-        {
-            await apiClient!.SubmitAsync(spec);
-        }
+        var submitted = useSupabase
+            ? await supabaseSubmitter!.SubmitAsync(spec, apiKey)
+            : await apiClient!.SubmitAsync(spec);
+
+        Console.WriteLine();
+        Console.WriteLine(
+            submitted
+                ? "Result has been submitted. HR will review."
+                : "Something went wrong submitting your result. Please take a screenshot of this "
+                    + "window (including any error text above) and send it to HR.");
     }
     catch (Exception ex)
     {
         Console.WriteLine();
         Console.WriteLine($"Error: {ex.Message}");
+        Console.WriteLine(
+            "Please take a screenshot of this window and send it to HR so they can look into it.");
     }
 }
 
