@@ -2,10 +2,6 @@ namespace TcpHardwareCheck.Models;
 
 public class HardwareSpec
 {
-    public string ApplicantName { get; set; } = string.Empty;
-
-    public string ApplicantEmail { get; set; } = string.Empty;
-
     public string OsVersion { get; set; } = string.Empty;
 
     public int CpuCores { get; set; }
@@ -22,9 +18,12 @@ public class HardwareSpec
 
     public string ScreenResolution { get; set; } = string.Empty;
 
-    public double InternetSpeedDown { get; set; }
+    // Nullable: a failed speed test (network blip, Cloudflare rate limit, etc.) shouldn't block
+    // the rest of the submission — see Program.cs, which leaves these null rather than aborting
+    // the whole run. Matches the extension's own popup.js, which submits null on the same failure.
+    public double? InternetSpeedDown { get; set; }
 
-    public double InternetSpeedUp { get; set; }
+    public double? InternetSpeedUp { get; set; }
 
     public bool WebcamPresent { get; set; }
 

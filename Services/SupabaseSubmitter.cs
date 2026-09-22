@@ -15,6 +15,22 @@ public class SupabaseSubmitter
         this.anonKey = anonKey;
     }
 
+    // Calls the lightweight validate_api_key RPC (validate-api-key-rpc.sql) instead of the full
+    // submit_hardware_check_direct — lets a wrong key be rejected before the caller wastes ~20s
+    // on a hardware/speed scan and before anything is written to submission_results.
+    public async Task<(bool IsValid, string Message)> ValidateApiKeyAsync(string apiKey)
+    {
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post, $"{supabaseUrl}/rest/v1/rpc/validate_api_key");
+        request.Headers.Add("apikey", anonKey);
+        request.Headers.Add("Authorization", $"Bearer {anonKey}");
+        request.Content = JsonContent.Create(new { p_api_key = apiKey });
+
+        using var response = await http.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+        return (response.IsSuccessStatusCode, body);
+    }
+
     public async Task<bool> SubmitAsync(HardwareSpec spec, string apiKey)
     {
         using var request = new HttpRequestMessage(

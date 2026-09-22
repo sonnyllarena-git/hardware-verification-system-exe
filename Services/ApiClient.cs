@@ -21,6 +21,20 @@ public class ApiClient
         this.apiKey = apiKey;
     }
 
+    // Calls GET /submit-hardware-check/validate instead of the full submit endpoint — lets a
+    // wrong key be rejected before the caller wastes ~20s on a hardware/speed scan and before
+    // anything is written to submission_results.
+    public async Task<(bool IsValid, string Message)> ValidateApiKeyAsync()
+    {
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get, $"{apiBaseUrl}/submit-hardware-check/validate");
+        request.Headers.Add("X-API-Key", apiKey);
+
+        using var response = await http.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+        return (response.IsSuccessStatusCode, body);
+    }
+
     public async Task<bool> SubmitAsync(HardwareSpec spec)
     {
         using var request = new HttpRequestMessage(

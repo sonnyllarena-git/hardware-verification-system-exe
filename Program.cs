@@ -6,84 +6,124 @@ LoadDotEnv();
 Console.WriteLine("TCP Hardware Verification Tool");
 Console.WriteLine();
 
-Console.Write("Enter your name: ");
-var name = Console.ReadLine() ?? string.Empty;
-
-Console.Write("Enter your email: ");
-var email = Console.ReadLine() ?? string.Empty;
-
+// The API key is the only thing that identifies who a submission belongs to — both submission
+// paths (this RPC and tcp-hardware-check-api's routes/submit.js) look the applicant up purely by
+// api_key and never read a name or email from the request. A name/email prompt here would just
+// be decorative and, worse, misleading (it would look like it matters when it doesn't).
 var apiKey = Environment.GetEnvironmentVariable("API_KEY");
 if (string.IsNullOrEmpty(apiKey))
 {
-    Console.Write("Enter your API key: ");
+    Console.Write("Enter your API key (from your applicant email): ");
     apiKey = Console.ReadLine() ?? string.Empty;
 }
 
 var apiBaseUrl = Environment.GetEnvironmentVariable("API_BASE_URL") ?? "http://localhost:3001/api";
 var submitMode = Environment.GetEnvironmentVariable("SUBMIT_MODE") ?? "api";
+var useSupabase = string.Equals(submitMode, "supabase", StringComparison.OrdinalIgnoreCase);
 
-try
-{
-    Console.WriteLine();
-    Console.WriteLine("Scanning your system...");
-
-    var spec = new HardwareSpec { ApplicantName = name, ApplicantEmail = email };
-
-    Console.WriteLine("  - Detecting OS and CPU...");
-    HardwareDetector.DetectOsAndCpu(spec);
-
-    Console.WriteLine("  - Detecting RAM and storage...");
-    HardwareDetector.DetectRamAndStorage(spec);
-
-    Console.WriteLine("  - Detecting screen resolution...");
-    HardwareDetector.DetectScreenResolution(spec);
-
-    Console.WriteLine("  - Detecting webcam and headset...");
-    HardwareDetector.DetectPeripherals(spec);
-
-    Console.WriteLine("  - Measuring internet speed (this can take 10-20 seconds)...");
-    var (down, up) = await SpeedTestService.MeasureAsync();
-    spec.InternetSpeedDown = down;
-    spec.InternetSpeedUp = up;
-
-    Console.WriteLine();
-    Console.WriteLine($"OS:       {spec.OsVersion}");
-    Console.WriteLine($"CPU:      {spec.CpuBrand} {spec.CpuModel} ({spec.CpuCores} cores)");
-    Console.WriteLine($"RAM:      {spec.RamGb} GB");
-    Console.WriteLine($"Storage:  {spec.StorageGb} GB ({spec.StorageType})");
-    Console.WriteLine($"Screen:   {spec.ScreenResolution}");
-    Console.WriteLine($"Internet: {down} Mbps down / {up} Mbps up");
-    Console.WriteLine($"Webcam:   {spec.WebcamPresent}");
-    Console.WriteLine($"Headset:  {spec.HeadsetPresent}");
-    Console.WriteLine();
-
-    Console.WriteLine("Submitting...");
-    if (string.Equals(submitMode, "supabase", StringComparison.OrdinalIgnoreCase))
-    {
-        var supabaseUrl = Environment.GetEnvironmentVariable("SUPABASE_URL")
-            ?? throw new InvalidOperationException("SUPABASE_URL must be set when SUBMIT_MODE=supabase");
-        var supabaseAnonKey = Environment.GetEnvironmentVariable("SUPABASE_ANON_KEY")
-            ?? throw new InvalidOperationException("SUPABASE_ANON_KEY must be set when SUBMIT_MODE=supabase");
-        var supabaseSubmitter = new SupabaseSubmitter(supabaseUrl, supabaseAnonKey);
-        await supabaseSubmitter.SubmitAsync(spec, apiKey);
-    }
-    else
-    {
-        var apiClient = new ApiClient(apiBaseUrl, apiKey);
-        await apiClient.SubmitAsync(spec);
-    }
-}
-catch (Exception ex)
-{
-    Console.WriteLine();
-    Console.WriteLine($"Error: {ex.Message}");
-}
+await RunAsync();
 
 if (!Console.IsInputRedirected)
 {
     Console.WriteLine();
     Console.Write("Press any key to exit...");
     Console.ReadKey();
+}
+
+async Task RunAsync()
+{
+    try
+    {
+        SupabaseSubmitter? supabaseSubmitter = null;
+        ApiClient? apiClient = null;
+
+        if (useSupabase)
+        {
+            var supabaseUrl = Environment.GetEnvironmentVariable("SUPABASE_URL")
+                ?? throw new InvalidOperationException("SUPABASE_URL must be set when SUBMIT_MODE=supabase");
+            var supabaseAnonKey = Environment.GetEnvironmentVariable("SUPABASE_ANON_KEY")
+                ?? throw new InvalidOperationException("SUPABASE_ANON_KEY must be set when SUBMIT_MODE=supabase");
+            supabaseSubmitter = new SupabaseSubmitter(supabaseUrl, supabaseAnonKey);
+        }
+        else
+        {
+            apiClient = new ApiClient(apiBaseUrl, apiKey);
+        }
+
+        // Check the key before running anything — a wrong key shouldn't cost the applicant a
+        // ~20s hardware/speed scan just to find out at the very end that none of it could be
+        // submitted.
+        Console.WriteLine();
+        Console.WriteLine("Checking your API key...");
+        var (isValid, validationMessage) = useSupabase
+            ? await supabaseSubmitter!.ValidateApiKeyAsync(apiKey)
+            : await apiClient!.ValidateApiKeyAsync();
+        if (!isValid)
+        {
+            Console.WriteLine($"API key rejected: {validationMessage}");
+            return;
+        }
+
+        Console.WriteLine("Scanning your system...");
+
+        var spec = new HardwareSpec();
+
+        Console.WriteLine("  - Detecting OS and CPU...");
+        HardwareDetector.DetectOsAndCpu(spec);
+
+        Console.WriteLine("  - Detecting RAM and storage...");
+        HardwareDetector.DetectRamAndStorage(spec);
+
+        Console.WriteLine("  - Detecting screen resolution...");
+        HardwareDetector.DetectScreenResolution(spec);
+
+        Console.WriteLine("  - Detecting webcam and headset...");
+        HardwareDetector.DetectPeripherals(spec);
+
+        Console.WriteLine("  - Measuring internet speed (this can take 10-20 seconds)...");
+        try
+        {
+            var (down, up) = await SpeedTestService.MeasureAsync();
+            spec.InternetSpeedDown = down;
+            spec.InternetSpeedUp = up;
+        }
+        catch (Exception ex)
+        {
+            // A network blip or Cloudflare rate limit here shouldn't cost the applicant the rest
+            // of an already-completed hardware scan — leave the speed fields null (same as a
+            // failed measurement in the extension's popup.js) and still submit everything else
+            // collected.
+            Console.WriteLine($"  (couldn't measure internet speed: {ex.Message} — continuing anyway)");
+        }
+
+        Console.WriteLine();
+        Console.WriteLine($"OS:       {spec.OsVersion}");
+        Console.WriteLine($"CPU:      {spec.CpuBrand} {spec.CpuModel} ({spec.CpuCores} cores)");
+        Console.WriteLine($"RAM:      {spec.RamGb} GB");
+        Console.WriteLine($"Storage:  {spec.StorageGb} GB ({spec.StorageType})");
+        Console.WriteLine($"Screen:   {spec.ScreenResolution}");
+        Console.WriteLine(
+            $"Internet: {spec.InternetSpeedDown?.ToString() ?? "Unavailable"} Mbps down / "
+            + $"{spec.InternetSpeedUp?.ToString() ?? "Unavailable"} Mbps up");
+        Console.WriteLine($"Webcam:   {spec.WebcamPresent}");
+        Console.WriteLine($"Headset:  {spec.HeadsetPresent}");
+        Console.WriteLine();
+
+        Console.WriteLine("Submitting...");
+        if (useSupabase)
+        {
+            await supabaseSubmitter!.SubmitAsync(spec, apiKey);
+        }
+        else
+        {
+            await apiClient!.SubmitAsync(spec);
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine();
+        Console.WriteLine($"Error: {ex.Message}");
+    }
 }
 
 static void LoadDotEnv()
